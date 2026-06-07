@@ -15,7 +15,7 @@ features:
 * Automatic labeling of recognized faces.
 * User-friendly and efficient implementation.
 
-features:
+components:
 
 * Python
 * OpenCV
