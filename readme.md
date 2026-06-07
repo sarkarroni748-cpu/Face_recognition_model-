@@ -1,1 +1,32 @@
-hell that is face recognition file
+The Face Recognition System is a computer vision application that detects and recognizes human faces from images or live video streams. The project uses image processing and machine learning techniques to identify individuals by comparing facial features with a stored database.
+
+objective:
+
+* Detect faces from images or webcam video.
+* Recognize and identify known individuals.
+* Store and manage facial data efficiently.
+* Provide accurate and real-time face recognition.
+
+features:
+
+* Real-time face detection using a webcam.
+* Face recognition based on trained facial datasets.
+* Easy addition of new users to the database.
+* Automatic labeling of recognized faces.
+* User-friendly and efficient implementation.
+
+features:
+
+* Python
+* OpenCV
+* NumPy
+* Face Recognition Library
+* Webcam/Camera Module
+
+application:
+
+* Attendance Management Systems
+* Security and Surveillance
+* Access Control Systems
+* Smart Home Security
+* Identity Verification
