@@ -12,14 +12,11 @@ from datetime import datetime
 
 engine = pyttsx3.init()
 
-def speak(name):
-    engine.say(name)
-    engine.runAndWait()
-
 def speak_all(names):
     for name in names:
         print(f"🔊 Speaking: {name}")
-        speak(name)
+        engine.say(name + "present")       # queue all names
+    engine.runAndWait()        # speak all at once
 
 
 # ============================================================
@@ -94,7 +91,7 @@ def recognize_faces(frame, known_encodings, known_names):
 # ============================================================
 
 PICTURE_FOLDER = "picture"
-DETECTION_TIME = 10   # seconds to collect names before speaking
+DETECTION_TIME = 5  # seconds to collect names before speaking
 
 # Load faces
 known_encodings, known_names = load_known_faces(PICTURE_FOLDER)
@@ -129,18 +126,22 @@ while True:
     cv2.putText(frame, f"Speaking in: {remaining}s", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
-    # Time is up — speak all names
+    # Time is up — speak all names then exit
     if elapsed >= DETECTION_TIME:
         os.system("clear")  # use "cls" on Windows
         print("=== ⏰ Time is up! Speaking names... ===\n")
 
+        # Speak first
         speak_all(detected_names)
 
-        print("\n=== ✅ Done! Restarting detection... ===\n")
+        print("\n=== ✅ Done! Terminating program... ===\n")
 
-        detected_names.clear()
-        cycle_start = time.time()
-        print(f"⏱  Collecting faces for {DETECTION_TIME} seconds...\n")
+        # Then stop camera and close window
+        video_capture.release()
+        cv2.destroyAllWindows()
+
+        # Exit the program
+        exit()
 
     cv2.imshow("Face Recognition", frame)
 
