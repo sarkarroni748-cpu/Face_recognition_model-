@@ -32,3 +32,6 @@ application:
 * Access Control Systems
 * Smart Home Security
 * Identity Verification
+
+for install requerments use that commad on your terminal
+pip install -r requirements.txt
