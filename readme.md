@@ -14,6 +14,7 @@ features:
 * Easy addition of new users to the database.
 * Automatic labeling of recognized faces.
 * User-friendly and efficient implementation.
+* speak ditected face
 
 components:
 
@@ -22,6 +23,7 @@ components:
 * NumPy
 * Face Recognition Library
 * Webcam/Camera Module
+* pyttsx3
 
 application:
 
