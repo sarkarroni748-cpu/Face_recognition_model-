@@ -18,12 +18,15 @@ features:
 
 components:
 
-* Python
-* OpenCV
-* NumPy
-* Face Recognition Library
-* Webcam/Camera Module
-* pyttsx3
+1. cv2 (OpenCV)
+2. os
+3. time
+4. platform
+5. threading
+6. numpy (np)
+7. datetime
+8. collections (defaultdict)
+9. insightface
 
 application:
 
