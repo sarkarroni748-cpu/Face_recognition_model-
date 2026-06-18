@@ -35,3 +35,10 @@ application:
 
 for install requerments use that commad on your terminal
 pip install -r requirements.txt
+
+for windo need 
+Download Visual C++ Build Tools → https://visualstudio.microsoft.com/visual-cpp-build-tools/
+Choose "Desktop development with C++
+
+it must python version be 13.10.4 or 13.11.0
+that did not not work properly on letest version 
