@@ -1,0 +1,11 @@
+#Install Packages (CPU)
+pip install insightface
+pip install onnxruntime
+pip install opencv-python
+pip install numpy
+
+#If You Have NVIDIA GPU
+pip install insightface
+pip install onnxruntime-gpu
+pip install opencv-python
+pip install numpy
