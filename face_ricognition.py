@@ -32,12 +32,13 @@ def speak(text):
         engine.runAndWait()
 
 
-def speak_all(names):
-    if not names:
+def speak_all(detected_students):
+    """detected_students: dict of {reg_number: name}"""
+    if not detected_students:
         speak("No faces detected")
         return
 
-    for name in sorted(names):
+    for reg_number, name in sorted(detected_students.items(), key=lambda x: x[1]):
         print(f"🔊 Speaking: {name}")
         speak(f"{name} present")
 
@@ -82,11 +83,26 @@ def cosine_similarity(a, b):
 # ============================================================
 
 def load_known_faces(picture_folder="picture"):
+    """
+    Expects filenames like: 101_roni_sarkar.jpg
+        -> reg_number = "101"
+        -> name       = "Roni Sarkar"
+
+    Multiple photos per student are supported with a trailing index:
+        101_roni_sarkar_1.jpg, 101_roni_sarkar_2.jpg -> still reg_number "101"
+
+    Returns:
+        students = {
+            "101": {"name": "Roni Sarkar", "embeddings": [emb1, emb2, ...]},
+            "102": {"name": "Priya Das",   "embeddings": [emb1, ...]},
+            ...
+        }
+    """
     if not os.path.exists(picture_folder):
         print(f"❌ ERROR: Folder '{picture_folder}' not found!")
         exit()
 
-    students = defaultdict(list)
+    students = defaultdict(lambda: {"name": "", "embeddings": []})
     total_images = 0
 
     for filename in os.listdir(picture_folder):
@@ -96,13 +112,20 @@ def load_known_faces(picture_folder="picture"):
         image_path = os.path.join(picture_folder, filename)
         base_name = os.path.splitext(filename)[0]
 
-        # Example: roni_1.jpg -> "Roni"
-        if "_" in base_name:
-            student_name = "_".join(base_name.split("_")[:-1])
-        else:
-            student_name = base_name
+        parts = base_name.split("_")
 
-        student_name = student_name.replace("_", " ").title()
+        if len(parts) < 2:
+            print(f"⚠️ Skipping '{filename}': expected format like 101_roni_sarkar.jpg")
+            continue
+
+        reg_number = parts[0]
+        name_parts = parts[1:]
+
+        # Drop trailing numeric index if present (e.g. ..._1, ..._2)
+        if len(name_parts) > 1 and name_parts[-1].isdigit():
+            name_parts = name_parts[:-1]
+
+        student_name = " ".join(name_parts).title()
 
         image = cv2.imread(image_path)
 
@@ -117,10 +140,11 @@ def load_known_faces(picture_folder="picture"):
             continue
 
         embedding = faces[0].embedding
-        students[student_name].append(embedding)
+        students[reg_number]["name"] = student_name
+        students[reg_number]["embeddings"].append(embedding)
         total_images += 1
 
-        print(f"✅ Loaded: {filename} -> {student_name}")
+        print(f"✅ Loaded: {filename} -> reg={reg_number}, name={student_name}")
 
     print("\n====================")
     print(f"Total Images: {total_images}")
@@ -147,26 +171,30 @@ def recognize_faces(frame, students):
 
     for face in faces:
         embedding = face.embedding
+        best_reg = "Unknown"
         best_name = "Unknown"
         best_score = -1
 
-        for student_name, known_embeddings in students.items():
+        for reg_number, data in students.items():
             scores = [
                 cosine_similarity(embedding, known_emb)
-                for known_emb in known_embeddings
+                for known_emb in data["embeddings"]
             ]
             avg_score = np.mean(scores)
 
             if avg_score > best_score:
                 best_score = avg_score
-                best_name = student_name
+                best_reg = reg_number
+                best_name = data["name"]
 
         if best_score < SIMILARITY_THRESHOLD:
+            best_reg = "Unknown"
             best_name = "Unknown"
 
         x1, y1, x2, y2 = face.bbox.astype(int)
 
         results.append({
+            "reg_number": best_reg,
             "name": best_name,
             "score": float(best_score),
             "bbox": (x1, y1, x2, y2)
@@ -187,6 +215,7 @@ def run_recognition(frame, students):
 
         new_map = {
             result["bbox"]: {
+                "reg_number": result["reg_number"],
                 "name": result["name"],
                 "score": result["score"]
             }
@@ -215,6 +244,8 @@ THREAD_INTERVAL = 1.0
 
 students = load_known_faces(PICTURE_FOLDER)
 db.initialize_database()
+db.sync_students(students)
+db.start_session()
 speak("Attention please")
 
 video_capture = cv2.VideoCapture(0)
@@ -229,7 +260,7 @@ print(f"⏱ Collecting faces for {DETECTION_TIME} seconds...\n")
 
 fps = 0
 prev_frame_time = time.time()
-detected_names = set()
+detected_students = {}  # {reg_number: name}
 cycle_start = time.time()
 last_thread_time = 0
 
@@ -278,20 +309,22 @@ while True:
 
     for bbox, data in current_results.items():
         x1, y1, x2, y2 = bbox
+        reg_number = data["reg_number"]
         name = data["name"]
         score = data["score"]
 
-        if name == "Unknown":
+        if reg_number == "Unknown":
             color = (0, 0, 255)
         else:
             color = (0, 255, 0)
 
-            if name not in detected_names:
-                detected_names.add(name)
+            if reg_number not in detected_students:
+                detected_students[reg_number] = name
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                print(f"[{timestamp}] 👤 Detected: {name} ({score:.2f})")
+                print(f"[{timestamp}] 👤 Detected: {name} (reg={reg_number}) ({score:.2f})")
 
-        label = f"{name} {score:.2f}"
+        # Show registration number above the box instead of name
+        label = f"{reg_number} {score:.2f}"
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
@@ -326,7 +359,7 @@ while True:
     cv2.putText(frame, f"FPS: {fps:.1f}",
                 (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-    cv2.putText(frame, f"Detected: {len(detected_names)}",
+    cv2.putText(frame, f"Detected: {len(detected_students)}",
                 (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
 
     # ========================================================
@@ -341,14 +374,16 @@ while True:
         cv2.waitKey(1)  # Flush window events (prevents freeze on Mac)
         time.sleep(0.5)
 
-        print("Detected names:\n")
-        for name in sorted(detected_names):
-            print(f"✅ {name}")
+        print("Detected students:\n")
+        for reg_number, name in sorted(detected_students.items(), key=lambda x: x[1]):
+            print(f"✅ {name} (reg={reg_number})")
 
         print()
-        speak_all(detected_names)
-        for name in detected_names:
-            db.mark_attendance(name)
+        speak_all(detected_students)
+
+        for reg_number, name in detected_students.items():
+            db.mark_attendance(reg_number, name)
+
         print("\n=== DONE ===\n")
         exit()
 
@@ -360,4 +395,3 @@ while True:
 video_capture.release()
 cv2.destroyAllWindows()
 cv2.waitKey(1)  # Flush window events on q-quit
-# finish
