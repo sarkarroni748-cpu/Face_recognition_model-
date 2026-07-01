@@ -4,6 +4,8 @@ import time
 import platform
 import threading
 import numpy as np
+import db_manager as db
+
 
 from datetime import datetime
 from collections import defaultdict
@@ -208,10 +210,11 @@ def run_recognition(frame, students):
 # ============================================================
 
 PICTURE_FOLDER = "picture"
-DETECTION_TIME = 3
+DETECTION_TIME = 10
 THREAD_INTERVAL = 1.0
 
 students = load_known_faces(PICTURE_FOLDER)
+db.initialize_database()
 speak("Attention please")
 
 video_capture = cv2.VideoCapture(0)
@@ -344,6 +347,8 @@ while True:
 
         print()
         speak_all(detected_names)
+        for name in detected_names:
+            db.mark_attendance(name)
         print("\n=== DONE ===\n")
         exit()
 
