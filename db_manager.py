@@ -1,6 +1,5 @@
-
 import mysql.connector
-from datetime import date, datetime, timedelta
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # CONFIG — update DB_PASSWORD to match your MySQL root password
@@ -10,8 +9,12 @@ DB_USER = "root"
 DB_PASSWORD = "rootroni"   # <-- change this
 DB_NAME = "attendance_system"
 
-# Minutes before the same student can be marked again
-COOLDOWN_MINUTES = 5
+PRESENT = "P"
+ABSENT = "A"
+
+# Tracks which row (session) this run should write to.
+# Set automatically by start_session() — you don't need to touch this.
+_current_session_id = None
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +29,7 @@ def get_connection(with_db=True):
 
 
 # ---------------------------------------------------------------------------
-# SETUP — creates database + students table if they don't exist
+# SETUP — creates database + students table + attendance_sheet table
 # ---------------------------------------------------------------------------
 def initialize_database():
     """Call once at startup. Safe to call every run."""
@@ -38,113 +41,149 @@ def initialize_database():
 
     conn = get_connection(with_db=True)
     cursor = conn.cursor()
+
+    # Reference table: maps reg_number -> name
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS students (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            name VARCHAR(100) NOT NULL UNIQUE,
+            reg_number VARCHAR(20) NOT NULL UNIQUE,
+            name VARCHAR(100) NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    conn.commit()
-    cursor.close()
-    conn.close()
-    print(f"[DB] Database '{DB_NAME}' and 'students' table ready.")
 
-
-# ---------------------------------------------------------------------------
-# GET OR CREATE STUDENT ID (by name)
-# ---------------------------------------------------------------------------
-def get_or_create_student_id(name):
-    """
-    Looks up a student's ID by name. If the name has never been seen before,
-    creates a new row for them automatically. Returns the student's id.
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT id FROM students WHERE name = %s", (name,))
-    row = cursor.fetchone()
-
-    if row:
-        student_id = row[0]
-    else:
-        cursor.execute("INSERT INTO students (name) VALUES (%s)", (name,))
-        conn.commit()
-        student_id = cursor.lastrowid
-        print(f"[DB] New student registered: '{name}' (id={student_id})")
-
-    cursor.close()
-    conn.close()
-    return student_id
-
-
-# ---------------------------------------------------------------------------
-# DAILY ATTENDANCE TABLE
-# ---------------------------------------------------------------------------
-def get_today_table_name():
-    return f"attendance_{date.today().strftime('%Y_%m_%d')}"
-
-
-def ensure_today_table():
-    """Creates today's table if missing. Reused for every run that day."""
-    table_name = get_today_table_name()
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
+    # Main spreadsheet table: one row per RUN (session), not per day.
+    # No UNIQUE constraint on session_time, since multiple runs per day
+    # are expected and each one gets its own row.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_sheet (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            student_id INT NOT NULL,
-            name VARCHAR(100) NOT NULL,
-            timestamp DATETIME NOT NULL,
-            FOREIGN KEY (student_id) REFERENCES students(id)
+            session_time DATETIME NOT NULL
         )
     """)
+
     conn.commit()
     cursor.close()
     conn.close()
-    return table_name
+    print(f"[DB] Database '{DB_NAME}' ready with 'students' and 'attendance_sheet' tables.")
 
 
 # ---------------------------------------------------------------------------
-# MARK ATTENDANCE — takes just a name, matching your script's output
+# SYNC STUDENTS — creates a column for any student who doesn't have one yet
 # ---------------------------------------------------------------------------
-def mark_attendance(name):
-    """
-    Marks attendance for a detected student name.
-    Automatically looks up (or creates) their student ID.
-    Skips if already marked within COOLDOWN_MINUTES.
-    Returns True if a new row was inserted, False if skipped.
-    """
-    if name == "Unknown":
-        return False  # never log unknown faces
+def _get_existing_columns():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'attendance_sheet'
+    """, (DB_NAME,))
+    columns = {row[0] for row in cursor.fetchall()}
+    cursor.close()
+    conn.close()
+    return columns
 
-    student_id = get_or_create_student_id(name)
-    table_name = ensure_today_table()
+
+def sync_students(students):
+    """
+    Call once at startup, right after loading known faces from the picture
+    folder. 'students' is the dict from load_known_faces():
+        { "D242528633": {"name": "Baba", "embeddings": [...]}, ... }
+    """
+    existing_columns = _get_existing_columns()
 
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        f"SELECT timestamp FROM {table_name} WHERE student_id = %s "
-        f"ORDER BY timestamp DESC LIMIT 1",
-        (student_id,)
-    )
-    last = cursor.fetchone()
+    new_columns = 0
+    for reg_number, data in students.items():
+        name = data["name"] if isinstance(data, dict) else data
 
-    now = datetime.now()
-    if last and (now - last[0]) < timedelta(minutes=COOLDOWN_MINUTES):
+        cursor.execute("SELECT id FROM students WHERE reg_number = %s", (reg_number,))
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO students (reg_number, name) VALUES (%s, %s)",
+                (reg_number, name)
+            )
+            print(f"[DB] New student registered: '{name}' (reg_number={reg_number})")
+
+        if reg_number not in existing_columns:
+            cursor.execute(
+                f"ALTER TABLE attendance_sheet ADD COLUMN `{reg_number}` VARCHAR(1) DEFAULT '{ABSENT}'"
+            )
+            existing_columns.add(reg_number)
+            new_columns += 1
+            print(f"[DB] Added attendance column for '{name}' ({reg_number})")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if new_columns:
+        print(f"[DB] Sync complete — {new_columns} new student column(s) added.")
+    else:
+        print("[DB] Sync complete — no new students to add.")
+
+
+# ---------------------------------------------------------------------------
+# START A NEW SESSION — creates a fresh row every time this is called
+# ---------------------------------------------------------------------------
+def start_session():
+    
+    global _current_session_id
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO attendance_sheet (session_time) VALUES (%s)",
+        (datetime.now(),)
+    )
+    conn.commit()
+    _current_session_id = cursor.lastrowid
+    cursor.close()
+    conn.close()
+
+    print(f"[DB] New session started (row id={_current_session_id}) at {datetime.now()}")
+    return _current_session_id
+
+
+# ---------------------------------------------------------------------------
+# MARK ATTENDANCE — sets this session's cell for this student to 'P'
+# ---------------------------------------------------------------------------
+def mark_attendance(reg_number, name=None):
+  
+    global _current_session_id
+
+    if reg_number == "Unknown":
+        return False
+
+    if _current_session_id is None:
+        start_session()
+
+    # Add the student's column on the fly if it doesn't exist yet
+    existing_columns = _get_existing_columns()
+    if reg_number not in existing_columns:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"ALTER TABLE attendance_sheet ADD COLUMN `{reg_number}` VARCHAR(1) DEFAULT '{ABSENT}'"
+        )
+        conn.commit()
         cursor.close()
         conn.close()
-        return False  # already marked recently
 
+    conn = get_connection()
+    cursor = conn.cursor()
     cursor.execute(
-        f"INSERT INTO {table_name} (student_id, name, timestamp) VALUES (%s, %s, %s)",
-        (student_id, name, now)
+        f"UPDATE attendance_sheet SET `{reg_number}` = %s WHERE id = %s",
+        (PRESENT, _current_session_id)
     )
     conn.commit()
     cursor.close()
     conn.close()
-    print(f"[DB] Attendance marked for '{name}' in {table_name}.")
+
+    display_name = name if name else reg_number
+    print(f"[DB] Marked PRESENT: {display_name} ({reg_number}) in session id={_current_session_id}")
     return True
 
 
@@ -156,13 +195,22 @@ if __name__ == "__main__":
 
     initialize_database()
 
-    result1 = mark_attendance("Test Student")
-    print("First mark attempt:", "Success" if result1 else "Skipped (cooldown)")
+    fake_students = {
+        "T001": {"name": "Test Student One", "embeddings": []},
+        "T002": {"name": "Test Student Two", "embeddings": []},
+    }
+    sync_students(fake_students)
 
-    result2 = mark_attendance("Test Student")
-    print("Second mark attempt (should skip):", "Success" if result2 else "Skipped (cooldown)")
+    # Simulate run #1
+    start_session()
+    mark_attendance("T001", "Test Student One")
+
+    # Simulate run #2 (as if you ran the program again)
+    start_session()
+    mark_attendance("T002", "Test Student Two")
 
     print("\nSelf-test complete. Check MySQL to confirm:")
-    print(f"  - Database: {DB_NAME}")
-    print("  - Table: students (should have 'Test Student')")
-    print(f"  - Table: {get_today_table_name()} (should have 1 row)")
+    print("  - Table 'attendance_sheet' now has TWO rows (two sessions)")
+    print("  - Row 1: T001 = 'P', T002 = 'A'")
+    print("  - Row 2: T001 = 'A', T002 = 'P'")
+    print("-----database was totally exicute-----")
